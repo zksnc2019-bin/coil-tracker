@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import {
   LayoutDashboard, ClipboardList, Wrench, Truck,
   Package, Receipt, CreditCard, Search,
-  Building2, MapPin, FileText, LogOut, ChevronDown
+  Building2, MapPin, FileText, LogOut, ChevronDown, FileSpreadsheet
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -43,7 +43,8 @@ const menu = [
   {
     group: '시스템',
     items: [
-      { label: '변경이력', path: '/audit', icon: FileText },
+      { label: '엑셀업로드', path: '/excel-import', icon: FileSpreadsheet },
+      { label: '변경이력',   path: '/audit',        icon: FileText },
     ],
   },
 ]
