@@ -17,6 +17,7 @@ import CoilTrace     from './pages/trace/CoilTrace'
 import VendorList    from './pages/master/VendorList'
 import SiteList      from './pages/master/SiteList'
 import AuditLog      from './pages/system/AuditLog'
+import ExcelImport   from './pages/system/ExcelImport'
 
 function PrivateRoute({ children, user }) {
   if (!user) return <Navigate to="/login" replace />
@@ -63,7 +64,8 @@ export default function App() {
           <Route path="trace"      element={<CoilTrace />} />
           <Route path="vendors"    element={<VendorList />} />
           <Route path="sites"      element={<SiteList />} />
-          <Route path="audit"      element={<AuditLog />} />
+          <Route path="audit"        element={<AuditLog />} />
+          <Route path="excel-import" element={<ExcelImport />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
