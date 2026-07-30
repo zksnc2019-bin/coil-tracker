@@ -5,13 +5,10 @@ import { Plus, Search, X, Upload } from 'lucide-react'
 
 function Modal({ row, vendors, orders, onClose, onSaved }) {
   const isNew = !row?.id
-  const [form, setForm] = useState({
-    coil_no: '', po_id: '', vendor_id: '', material: 'SGHC',
-    thickness: '', width: '', coil_weight: '', work_spec: '',
-    work_weight: '', work_date: new Date().toISOString().slice(0,10), memo: '',
-    ...row,
-    po_id: row?.po_id ?? '',
-    vendor_id: row?.vendor_id ?? '',
+  const [form, setForm] = useState(() => {
+    const b={coil_no:'',po_id:'',vendor_id:'',material:'SGHC',thickness:'',width:'',coil_weight:'',work_spec:'',work_weight:'',work_date:new Date().toISOString().slice(0,10),memo:''}
+    if(row){Object.assign(b,row);b.po_id=row.po_id??'';b.vendor_id=row.vendor_id??''}
+    return b
   })
   const set = (k,v) => setForm(f=>({...f,[k]:v}))
 

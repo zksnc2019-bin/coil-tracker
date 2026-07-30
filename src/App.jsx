@@ -4,20 +4,24 @@ import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabase'
 import Layout from './components/Layout'
 import Login from './pages/Login'
-import CEODashboard    from './pages/dashboard/CEODashboard'
+import CEODashboard     from './pages/dashboard/CEODashboard'
 import FinanceDashboard from './pages/dashboard/FinanceDashboard'
 import ManagerDashboard from './pages/dashboard/ManagerDashboard'
-import POList    from './pages/po/POList'
-import WorkOrderList from './pages/workorder/WorkOrderList'
-import DeliveryList  from './pages/delivery/DeliveryList'
-import InventoryList from './pages/inventory/InventoryList'
-import PurchaseList  from './pages/purchase/PurchaseList'
-import PaymentList   from './pages/payment/PaymentList'
-import CoilTrace     from './pages/trace/CoilTrace'
-import VendorList    from './pages/master/VendorList'
-import SiteList      from './pages/master/SiteList'
-import AuditLog      from './pages/system/AuditLog'
-import ExcelImport   from './pages/system/ExcelImport'
+import POList           from './pages/po/POList'
+import WorkOrderList    from './pages/workorder/WorkOrderList'
+import DeliveryList     from './pages/delivery/DeliveryList'
+import InventoryList    from './pages/inventory/InventoryList'
+import PurchaseList     from './pages/purchase/PurchaseList'
+import PaymentList      from './pages/payment/PaymentList'
+import CoilTrace        from './pages/trace/CoilTrace'
+import VendorList       from './pages/master/VendorList'
+import SiteList         from './pages/master/SiteList'
+import AuditLog         from './pages/system/AuditLog'
+import ExcelImport      from './pages/system/ExcelImport'
+// 판재원자재 관리 (신규)
+import Overview         from './pages/overview/Overview'
+import SiteStatus       from './pages/site/SiteStatus'
+import MonthlyClose     from './pages/monthly/MonthlyClose'
 
 function PrivateRoute({ children, user }) {
   if (!user) return <Navigate to="/login" replace />
@@ -25,7 +29,7 @@ function PrivateRoute({ children, user }) {
 }
 
 export default function App() {
-  const [user, setUser] = useState(undefined)  // undefined = 로딩중
+  const [user, setUser] = useState(undefined)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -55,7 +59,12 @@ export default function App() {
           <Route path="dashboard/ceo"     element={<CEODashboard />} />
           <Route path="dashboard/finance" element={<FinanceDashboard />} />
           <Route path="dashboard/manager" element={<ManagerDashboard />} />
-          <Route path="po"         element={<POList />} />
+          {/* 판재원자재 관리 */}
+          <Route path="overview"      element={<Overview />} />
+          <Route path="po"            element={<POList />} />
+          <Route path="site-status"   element={<SiteStatus />} />
+          <Route path="monthly-close" element={<MonthlyClose />} />
+          {/* 기존 업무 */}
           <Route path="workorder"  element={<WorkOrderList />} />
           <Route path="delivery"   element={<DeliveryList />} />
           <Route path="inventory"  element={<InventoryList />} />
