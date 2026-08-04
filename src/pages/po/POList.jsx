@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import toast from 'react-hot-toast'
-import { Plus, Search, X, Copy, ChevronRight, Package, Truck, History } from 'lucide-react'
+import {
+  Building2, ChevronRight, Copy, History, MapPin,
+  Package, Plus, Search, Truck, X,
+} from 'lucide-react'
 
 // ──────────────────────────────────────────────────────────
 // 상수
@@ -174,6 +178,8 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
       po_date: new Date().toISOString().slice(0, 10),
       site_id: '', vendor_id: '',
       due_date: '',
+      expected_delivery_date: '',
+      shipped_date: '',
       po_purpose: '',
       delivery_place: '',
       manager_name: '',
@@ -182,7 +188,13 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
       memo: '',
     }
     if (po) { Object.assign(base, po); base.site_id = po.site_id ?? ''; base.vendor_id = po.vendor_id ?? '' }
-    if (copyMode) { delete base.id; delete base.po_number; base.status = '임시저장'; base.po_date = new Date().toISOString().slice(0, 10) }
+    if (copyMode) {
+      delete base.id
+      delete base.po_number
+      base.status = '임시저장'
+      base.po_date = new Date().toISOString().slice(0, 10)
+      base.shipped_date = ''
+    }
     return base
   })
 
@@ -228,6 +240,8 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
       site_id: form.site_id ? parseInt(form.site_id) : null,
       vendor_id: parseInt(form.vendor_id),
       due_date: form.due_date,
+      expected_delivery_date: form.expected_delivery_date || null,
+      shipped_date: form.shipped_date || null,
       po_purpose: form.po_purpose || null,
       delivery_place: form.delivery_place || null,
       manager_name: form.manager_name || null,
@@ -292,26 +306,28 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
 
         {/* 입력 영역 */}
         <div className="overflow-y-auto px-6 py-4 space-y-3 flex-1">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div>
               <label className={LBL}>발주일 *</label>
               <input type="date" value={form.po_date} onChange={e => setF('po_date', e.target.value)} className="input" />
             </div>
             <div>
+              <label className={LBL}>상차예정일</label>
+              <input type="date" value={form.expected_delivery_date || ''} onChange={e => setF('expected_delivery_date', e.target.value)} className="input" />
+            </div>
+            <div>
+              <label className={LBL}>출고일</label>
+              <input type="date" value={form.shipped_date || ''} onChange={e => setF('shipped_date', e.target.value)} className="input" />
+            </div>
+            <div>
               <label className={LBL}>납기일 *</label>
               <input type="date" value={form.due_date} onChange={e => setF('due_date', e.target.value)} className="input" />
             </div>
-            <div>
-              <label className={LBL}>결제조건</label>
-              <select value={form.payment_terms} onChange={e => setF('payment_terms', e.target.value)} className="select">
-                {['현금', '익월말', '60일', '90일', '어음'].map(v => <option key={v}>{v}</option>)}
-              </select>
-            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className={LBL}>외주업체 *</label>
+              <label className={LBL}>매입거래처 *</label>
               <select value={form.vendor_id} onChange={e => setF('vendor_id', e.target.value)} className="select">
                 <option value="">선택</option>
                 {vendors.map(v => <option key={v.id} value={v.id}>{v.vendor_name}</option>)}
@@ -322,6 +338,12 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
               <select value={form.site_id} onChange={e => setF('site_id', e.target.value)} className="select">
                 <option value="">미지정</option>
                 {sites.map(s => <option key={s.id} value={s.id}>{s.site_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={LBL}>결제조건</label>
+              <select value={form.payment_terms} onChange={e => setF('payment_terms', e.target.value)} className="select">
+                {['현금', '익월말', '60일', '90일', '어음'].map(v => <option key={v}>{v}</option>)}
               </select>
             </div>
           </div>
@@ -406,8 +428,14 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
   const [items, setItems] = useState([])
   const [plans, setPlans] = useState([])
   const [loading, setLoading] = useState(true)
+  const [showPlanForm, setShowPlanForm] = useState(false)
+  const [savingPlan, setSavingPlan] = useState(false)
+  const [planForm, setPlanForm] = useState({
+    po_item_id: '', planned_date: '', expected_month: '',
+    plan_qty: '', plan_weight: '', unit_price_est: '', memo: '',
+  })
 
-  useEffect(() => {
+  const loadDetails = () => {
     if (!po?.id) return
     setLoading(true)
     Promise.all([
@@ -418,6 +446,10 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
       setPlans(pData || [])
       setLoading(false)
     })
+  }
+
+  useEffect(() => {
+    loadDetails()
   }, [po?.id])
 
   if (!po) return null
@@ -426,6 +458,39 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
   const site = sites.find(s => s.id === po.site_id)
   const totalAmt = items.reduce((s, it) => s + (parseFloat(it.est_amount) || 0), 0)
   const totalWt  = items.reduce((s, it) => s + (parseFloat(it.est_weight) || 0), 0)
+  const plannedWt = plans.reduce((s, plan) => s + (parseFloat(plan.plan_weight) || 0), 0)
+  const plannedAmt = plans.reduce((s, plan) => s + (parseFloat(plan.est_amount) || 0), 0)
+
+  const savePlan = async () => {
+    if (!planForm.planned_date || !planForm.expected_month || !planForm.plan_weight) {
+      return toast.error('입고예정일, 예상 매입월, 예정중량은 필수입니다.')
+    }
+    setSavingPlan(true)
+    const weight = parseFloat(planForm.plan_weight) || 0
+    const price = parseFloat(planForm.unit_price_est) || 0
+    const { error } = await supabase.from('purchase_delivery_plans').insert({
+      po_id: po.id,
+      po_item_id: planForm.po_item_id ? parseInt(planForm.po_item_id) : null,
+      plan_seq: plans.length + 1,
+      planned_date: planForm.planned_date,
+      expected_month: planForm.expected_month,
+      plan_qty: planForm.plan_qty ? parseInt(planForm.plan_qty) : null,
+      plan_weight: weight,
+      unit_price_est: price || null,
+      est_amount: price ? weight * price : null,
+      status: '입고예정',
+      memo: planForm.memo || null,
+    })
+    setSavingPlan(false)
+    if (error) return toast.error(error.message)
+    toast.success('분할입고 계획을 등록했습니다.')
+    setPlanForm({
+      po_item_id: '', planned_date: '', expected_month: '',
+      plan_qty: '', plan_weight: '', unit_price_est: '', memo: '',
+    })
+    setShowPlanForm(false)
+    loadDetails()
+  }
 
   const TABS = [
     { key: 'items',    label: '발주품목',    icon: Package,  badge: items.length },
@@ -444,7 +509,8 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
               <span className={`${STATUS_BADGE[po.status]} shrink-0`}>{po.status}</span>
             </div>
             <p className="text-xs text-gray-500 truncate">{vendor?.vendor_name} · {site?.site_name || '현장미지정'}</p>
-            <p className="text-xs text-gray-400">{po.po_date} → 납기 {po.due_date}</p>
+            <p className="text-xs text-[#334155]">발주 {po.po_date} · 상차예정 {po.expected_delivery_date || '-'}</p>
+            <p className="text-xs text-[#334155]">출고 {po.shipped_date || '-'} · 납기 {po.due_date}</p>
           </div>
           <div className="flex items-center gap-1 shrink-0 ml-2">
             <button onClick={onCopy} title="복사"
@@ -523,11 +589,92 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
           </div>
         ) : tab === 'receipts' ? (
           <div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="bg-blue-50 rounded-lg px-3 py-2 text-xs text-blue-700">
+                계획중량 <b>{fmt(plannedWt, 1)} kg</b>
+              </div>
+              <div className="bg-blue-50 rounded-lg px-3 py-2 text-xs text-blue-700">
+                계획금액 <b>{Math.round(plannedAmt).toLocaleString()} 원</b>
+              </div>
+            </div>
+            <button onClick={() => setShowPlanForm(value => !value)}
+              className="btn-secondary w-full mb-3 flex items-center justify-center gap-1.5 text-xs">
+              <Plus className="w-3.5 h-3.5" />
+              {showPlanForm ? '분할입고 입력 닫기' : '분할입고 계획 추가'}
+            </button>
+
+            {showPlanForm && (
+              <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3 mb-3 space-y-2">
+                <div>
+                  <label className={LBL}>대상 품목</label>
+                  <select value={planForm.po_item_id}
+                    onChange={e => setPlanForm(form => ({ ...form, po_item_id: e.target.value }))}
+                    className="select text-xs">
+                    <option value="">발주 전체</option>
+                    {items.map(item => (
+                      <option key={item.id} value={item.id}>
+                        품목 {item.item_seq} · {item.item_name || item.material || '미입력'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={LBL}>입고예정일 *</label>
+                    <input type="date" value={planForm.planned_date}
+                      onChange={e => setPlanForm(form => ({
+                        ...form,
+                        planned_date: e.target.value,
+                        expected_month: form.expected_month || e.target.value.slice(0, 7),
+                      }))}
+                      className="input text-xs" />
+                  </div>
+                  <div>
+                    <label className={LBL}>예상 매입월 *</label>
+                    <input type="month" value={planForm.expected_month}
+                      onChange={e => setPlanForm(form => ({ ...form, expected_month: e.target.value }))}
+                      className="input text-xs" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className={LBL}>예정수량</label>
+                    <input type="number" min="0" value={planForm.plan_qty}
+                      onChange={e => setPlanForm(form => ({ ...form, plan_qty: e.target.value }))}
+                      className="input text-xs" />
+                  </div>
+                  <div>
+                    <label className={LBL}>예정중량(kg) *</label>
+                    <input type="number" min="0" step="0.001" value={planForm.plan_weight}
+                      onChange={e => setPlanForm(form => ({ ...form, plan_weight: e.target.value }))}
+                      className="input text-xs" />
+                  </div>
+                  <div>
+                    <label className={LBL}>예상단가(원/kg)</label>
+                    <input type="number" min="0" step="0.01" value={planForm.unit_price_est}
+                      onChange={e => setPlanForm(form => ({ ...form, unit_price_est: e.target.value }))}
+                      className="input text-xs" />
+                  </div>
+                </div>
+                {planForm.plan_weight && planForm.unit_price_est && (
+                  <p className="text-xs text-blue-700">
+                    예상금액: <b>{Math.round(Number(planForm.plan_weight) * Number(planForm.unit_price_est)).toLocaleString()}원</b>
+                  </p>
+                )}
+                <input value={planForm.memo}
+                  onChange={e => setPlanForm(form => ({ ...form, memo: e.target.value }))}
+                  className="input text-xs" placeholder="분할입고 메모" />
+                <button onClick={savePlan} disabled={savingPlan} className="btn-primary w-full text-xs">
+                  {savingPlan ? '저장중...' : '입고계획 저장'}
+                </button>
+              </div>
+            )}
+
             {plans.length === 0 ? (
               <div className="text-center py-10">
                 <Truck className="w-8 h-8 text-gray-200 mx-auto mb-2" />
                 <p className="text-gray-400 text-sm">등록된 입고 계획이 없습니다.</p>
-                <p className="text-xs text-gray-300 mt-1">월말반영 시 자동 연결됩니다.</p>
+                <p className="text-xs text-gray-300 mt-1">분할입고 계획을 등록해 주세요.</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -545,6 +692,8 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
                       <div>예정월: <b>{p.expected_month || '-'}</b></div>
                       <div>예정중량: <b>{p.plan_weight != null ? fmt(p.plan_weight, 1) + ' kg' : '-'}</b></div>
                       <div>실제중량: <b>{p.actual_weight != null ? fmt(p.actual_weight, 1) + ' kg' : '-'}</b></div>
+                      <div>예상단가: <b>{p.unit_price_est != null ? fmt(p.unit_price_est) + '원/kg' : '-'}</b></div>
+                      <div>예상금액: <b>{p.est_amount != null ? fmt(p.est_amount) + '원' : '-'}</b></div>
                     </div>
                   </div>
                 ))}
@@ -575,6 +724,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
 // POList — 메인 컴포넌트
 // ──────────────────────────────────────────────────────────
 export default function POList() {
+  const navigate = useNavigate()
   const [rows, setRows] = useState([])
   const [vendors, setVendors] = useState([])
   const [sites, setSites] = useState([])
@@ -645,6 +795,12 @@ export default function POList() {
           <p className="text-sm text-gray-500">판재·원자재 발주 현황</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => navigate('/vendors')} className="border border-blue-600 bg-white text-blue-800 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-50 flex items-center gap-1.5">
+            <Building2 className="w-4 h-4" /> 매입거래처 관리
+          </button>
+          <button onClick={() => navigate('/sites')} className="border border-blue-600 bg-white text-blue-800 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-50 flex items-center gap-1.5">
+            <MapPin className="w-4 h-4" /> 현장 관리
+          </button>
           {selected && (
             <button onClick={() => openModal(selected, true)}
               className="btn-secondary flex items-center gap-1.5">
@@ -683,8 +839,10 @@ export default function POList() {
               <tr>
                 <th>발주번호</th>
                 <th>발주일</th>
+                <th>상차예정일</th>
+                <th>출고일</th>
                 <th>납기일</th>
-                <th>업체</th>
+                <th>매입거래처</th>
                 <th>현장</th>
                 <th>품목</th>
                 <th>중량(kg)</th>
@@ -695,9 +853,9 @@ export default function POList() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={10} className="text-center py-16 text-gray-400">로딩중...</td></tr>
+                <tr><td colSpan={12} className="text-center py-16 text-gray-700">로딩중...</td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={10} className="text-center py-16 text-gray-400">발주 내역이 없습니다.</td></tr>
+                <tr><td colSpan={12} className="text-center py-16 text-gray-700">발주 내역이 없습니다.</td></tr>
               ) : rows.map(r => {
                 const s = summary[r.id] || {}
                 const isSelected = selected?.id === r.id
@@ -707,6 +865,8 @@ export default function POList() {
                     className={`cursor-pointer select-none ${isSelected ? '!bg-blue-100 hover:!bg-blue-100' : ''}`}>
                     <td className="font-mono text-xs font-medium">{r.po_number}</td>
                     <td className="text-xs text-center">{r.po_date}</td>
+                    <td className="text-xs text-center">{r.expected_delivery_date || '-'}</td>
+                    <td className="text-xs text-center">{r.shipped_date || '-'}</td>
                     <td className="text-xs text-center">{r.due_date}</td>
                     <td className="text-xs">{vendors.find(v => v.id === r.vendor_id)?.vendor_name || '-'}</td>
                     <td className="text-xs">{sites.find(s => s.id === r.site_id)?.site_name || '-'}</td>

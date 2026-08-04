@@ -4,3 +4,8 @@ dist
 .env*.local
 *.log
 .DS_Store
+vite.config.js.timestamp-*.mjs
+*.zip
+GPT-coil-tracker-*/
+coil-tracker-codex-*/
+coil-tracker-vercel-*/

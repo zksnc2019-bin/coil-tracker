@@ -1,368 +1,446 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import toast from 'react-hot-toast'
-import { CalendarCheck, Upload, CheckCircle, AlertCircle, FileSpreadsheet, Plus } from 'lucide-react'
+import {
+  AlertCircle, CalendarCheck, CheckCircle, Download,
+  FileSpreadsheet, Pencil, RefreshCw,
+} from 'lucide-react'
 import * as XLSX from 'xlsx'
+import {
+  exportRowsWorkbook, FILE_TYPES, getPeriodMonths, normalizeRow,
+} from '../../lib/monthlyWorkbook'
 
-// 파일 타입 정의
-const FILE_TYPES = [
-  { key: 'purchase', label: '매입내역',  color: 'blue' },
-  { key: 'work',     label: '작업내역',  color: 'green' },
-  { key: 'delivery', label: '출고내역',  color: 'yellow' },
-  { key: 'payment',  label: '지급내역',  color: 'purple' },
-  { key: 'inventory',label: '재고현황',  color: 'orange' },
-  { key: 'sales',    label: '매출내역',  color: 'red' },
-]
-
-const COLOR_MAP = {
-  blue:   'bg-blue-50 border-blue-200 text-blue-700',
-  green:  'bg-green-50 border-green-200 text-green-700',
-  yellow: 'bg-yellow-50 border-yellow-200 text-yellow-700',
-  purple: 'bg-purple-50 border-purple-200 text-purple-700',
-  orange: 'bg-orange-50 border-orange-200 text-orange-700',
-  red:    'bg-red-50 border-red-200 text-red-700',
+const COLORS = {
+  purchase: 'bg-blue-50 border-blue-200 text-blue-700',
+  work: 'bg-green-50 border-green-200 text-green-700',
+  delivery: 'bg-yellow-50 border-yellow-200 text-yellow-700',
+  payment: 'bg-purple-50 border-purple-200 text-purple-700',
+  inventory: 'bg-orange-50 border-orange-200 text-orange-700',
+  sales: 'bg-red-50 border-red-200 text-red-700',
 }
 
-function MonthSelector({ value, onChange }) {
-  return (
-    <input
-      type="month"
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="input w-40"
-    />
-  )
+const fmt = value => Number(value || 0).toLocaleString('ko-KR')
+
+async function getCurrentUserLabel() {
+  const { data } = await supabase.auth.getUser()
+  return data.user?.email || '관리자'
 }
 
-function FileUploadCard({ type, baseMonth, onUploaded }) {
-  const [dragging, setDragging] = useState(false)
+function FileUploadCard({ type, baseMonth, locked, masters, onUploaded }) {
   const [uploading, setUploading] = useState(false)
   const [result, setResult] = useState(null)
-  const colorClass = COLOR_MAP[type.color] || COLOR_MAP.blue
 
-  const handleFile = async (file) => {
-    if (!baseMonth) return toast.error('기준 연월을 먼저 선택하세요.')
+  const handleFile = async file => {
+    if (locked) return toast.error('마감확정된 월입니다. 먼저 마감 수정을 시작해 주세요.')
+    if (!baseMonth) return toast.error('기준연월을 선택해 주세요.')
     if (!file) return
-
     setUploading(true)
     setResult(null)
 
+    let batchId = null
     try {
-      // SheetJS로 파일 읽기
-      const buf = await file.arrayBuffer()
-      const wb  = XLSX.read(buf, { type: 'array', cellDates: true })
-      const sheetName = wb.SheetNames[0]
-      const ws  = wb.Sheets[sheetName]
-      const rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: null })
+      const { data: duplicate } = await supabase
+        .from('monthly_import_batches')
+        .select('id')
+        .eq('base_month', baseMonth)
+        .eq('file_type', type.key)
+        .eq('file_name', file.name)
+        .limit(1)
+      if (duplicate?.length) throw new Error('같은 기준월에 동일한 파일이 이미 등록되어 있습니다.')
 
-      if (rows.length === 0) {
-        setUploading(false)
-        return toast.error('파일에 데이터가 없습니다.')
-      }
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
+      const sourceRows = []
+      workbook.SheetNames.forEach(sheetName => {
+        const sheet = workbook.Sheets[sheetName]
+        XLSX.utils.sheet_to_json(sheet, { raw: false, defval: null }).forEach((row, index) => {
+          sourceRows.push({ sheetName, sourceRow: index + 2, row })
+        })
+      })
+      if (!sourceRows.length) throw new Error('파일에 읽을 수 있는 데이터가 없습니다.')
 
-      // monthly_import_batches에 배치 등록
-      const { data: batch, error: bErr } = await supabase
+      const uploadedBy = await getCurrentUserLabel()
+      const { data: batch, error: batchError } = await supabase
         .from('monthly_import_batches')
         .insert({
-          base_month:   baseMonth,
-          file_type:    type.key,
-          file_name:    file.name,
-          sheet_name:   sheetName,
-          total_rows:   rows.length,
-          status:       '업로드중',
+          base_month: baseMonth,
+          file_type: type.key,
+          file_name: file.name,
+          sheet_name: workbook.SheetNames.join(', '),
+          total_rows: sourceRows.length,
+          status: '업로드중',
+          uploaded_by: uploadedBy,
         })
         .select('id')
         .single()
+      if (batchError) throw batchError
+      batchId = batch.id
 
-      if (bErr) throw new Error(bErr.message)
-
-      // monthly_import_rows에 RAW 데이터 저장 (100건 단위 배치)
-      const CHUNK = 100
-      let okRows = 0, errRows = 0
-
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk = rows.slice(i, i + CHUNK).map((row, j) => ({
-          batch_id:     batch.id,
-          base_month:   baseMonth,
-          file_type:    type.key,
-          source_file:  file.name,
-          source_sheet: sheetName,
-          source_row:   i + j + 2,  // 헤더 제외 실제 행번호
-          raw_data:     row,
-          link_status:  '미확인',
-        }))
-
-        const { error: rErr } = await supabase.from('monthly_import_rows').insert(chunk)
-        if (rErr) errRows += chunk.length
-        else okRows += chunk.length
+      let okRows = 0
+      let checkRows = 0
+      let errorRows = 0
+      const chunkSize = 100
+      for (let index = 0; index < sourceRows.length; index += chunkSize) {
+        const payload = sourceRows.slice(index, index + chunkSize).map(source => {
+          const normalized = normalizeRow(source.row, type.key, masters)
+          if (normalized.link_status === '정상') okRows += 1
+          else checkRows += 1
+          return {
+            batch_id: batch.id,
+            base_month: baseMonth,
+            file_type: type.key,
+            source_file: file.name,
+            source_sheet: source.sheetName,
+            source_row: source.sourceRow,
+            raw_data: source.row,
+            ...normalized,
+          }
+        })
+        const { error } = await supabase.from('monthly_import_rows').insert(payload)
+        if (error) {
+          errorRows += payload.length
+          okRows = Math.max(0, okRows - payload.filter(row => row.link_status === '정상').length)
+          checkRows = Math.max(0, checkRows - payload.filter(row => row.link_status !== '정상').length)
+        }
       }
 
-      // 배치 상태 업데이트
       await supabase.from('monthly_import_batches').update({
-        ok_rows:    okRows,
-        error_rows: errRows,
-        status:     errRows === 0 ? '검토중' : '검토중',
+        ok_rows: okRows,
+        error_rows: errorRows,
+        unlinked_rows: checkRows,
+        status: '검토중',
       }).eq('id', batch.id)
 
-      const res = { total: rows.length, ok: okRows, err: errRows, batchId: batch.id }
-      setResult(res)
-      toast.success(`${type.label} ${okRows}행 업로드 완료`)
-      if (onUploaded) onUploaded(res)
-    } catch (e) {
-      toast.error('업로드 실패: ' + e.message)
+      setResult({ total: sourceRows.length, ok: okRows, check: checkRows, error: errorRows })
+      toast.success(`${type.label} ${sourceRows.length}행을 분석했습니다.`)
+      onUploaded()
+    } catch (error) {
+      if (batchId) {
+        await supabase.from('monthly_import_batches').delete().eq('id', batchId)
+      }
+      toast.error(`업로드 실패: ${error.message}`)
+    } finally {
+      setUploading(false)
     }
-    setUploading(false)
-  }
-
-  const onDrop = (e) => {
-    e.preventDefault()
-    setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
   }
 
   return (
-    <div
-      className={`border-2 rounded-xl p-4 transition-all cursor-pointer ${
-        dragging ? 'border-blue-400 bg-blue-50 scale-105' : `border ${colorClass}`
-      }`}
-      onDragOver={e => { e.preventDefault(); setDragging(true) }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={onDrop}
-      onClick={() => document.getElementById(`file-${type.key}`).click()}
-    >
-      <input id={`file-${type.key}`} type="file"
-        accept=".xlsx,.xls,.csv" className="hidden"
-        onChange={e => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = '' }}
+    <label className={`border rounded-xl p-4 ${locked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${COLORS[type.key]}`}>
+      <input
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        className="hidden"
+        disabled={locked || uploading}
+        onChange={event => {
+          handleFile(event.target.files?.[0])
+          event.target.value = ''
+        }}
       />
-
       <div className="flex items-center gap-2 mb-2">
         <FileSpreadsheet className="w-4 h-4" />
         <span className="font-semibold text-sm">{type.label}</span>
       </div>
-
       {uploading ? (
-        <div className="text-xs flex items-center gap-1.5 text-gray-500">
-          <div className="animate-spin w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full" />
-          업로드중...
-        </div>
+        <p className="text-xs">전체 시트 분석 중...</p>
       ) : result ? (
         <div className="text-xs space-y-0.5">
-          <div className="flex items-center gap-1 text-green-600">
-            <CheckCircle className="w-3 h-3" /> {result.ok}행 완료
-          </div>
-          {result.err > 0 && (
-            <div className="flex items-center gap-1 text-red-500">
-              <AlertCircle className="w-3 h-3" /> {result.err}행 오류
-            </div>
-          )}
+          <p>전체 {fmt(result.total)}행</p>
+          <p>정상 {fmt(result.ok)}행 · 확인필요 {fmt(result.check)}행</p>
+          {result.error > 0 && <p className="text-red-600">저장오류 {fmt(result.error)}행</p>}
         </div>
       ) : (
-        <p className="text-xs text-gray-400">클릭하거나 파일을 끌어다 놓으세요</p>
+        <p className="text-xs opacity-70">파일을 선택해 주세요.</p>
       )}
+    </label>
+  )
+}
+
+function ReviewTable({ rows, loading }) {
+  if (loading) return <p className="text-center py-16 text-gray-400">ROW DATA를 불러오는 중입니다.</p>
+  if (!rows.length) return <p className="text-center py-16 text-gray-400">검토할 자료가 없습니다.</p>
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-auto">
+      <table className="tbl min-w-[1180px]">
+        <thead>
+          <tr>
+            <th>구분</th><th>일자</th><th>업체</th><th>현장</th><th>발주번호</th>
+            <th>코일번호</th><th>재질</th><th>두께</th><th>폭</th>
+            <th>중량</th><th>금액</th><th>원본</th><th>상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => (
+            <tr key={row.id}>
+              <td>{FILE_TYPES.find(type => type.key === row.file_type)?.label || row.file_type}</td>
+              <td>{row.std_date || '-'}</td>
+              <td>{row.std_vendor_name || '-'}</td>
+              <td>{row.std_site_name || '-'}</td>
+              <td>{row.std_po_number || '-'}</td>
+              <td>{row.std_coil_no || '-'}</td>
+              <td>{row.std_material || '-'}</td>
+              <td className="text-right">{row.std_thickness ?? '-'}</td>
+              <td className="text-right">{row.std_width ?? '-'}</td>
+              <td className="text-right">{row.std_weight != null ? fmt(row.std_weight) : '-'}</td>
+              <td className="text-right">{row.std_amount != null ? fmt(row.std_amount) : '-'}</td>
+              <td className="text-xs">{row.source_file}<br />{row.source_sheet} / {row.source_row}행</td>
+              <td>
+                <span className={row.link_status === '정상' ? 'badge-green' : 'badge-yellow'}>
+                  {row.link_status}
+                </span>
+                {row.error_detail && <p className="text-xs text-red-500 mt-1">{row.error_detail}</p>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
 
 export default function MonthlyClose() {
   const now = new Date()
-  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const [baseMonth, setBaseMonth] = useState(defaultMonth)
+  const initialMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const [baseMonth, setBaseMonth] = useState(initialMonth)
   const [batches, setBatches] = useState([])
   const [closing, setClosing] = useState(null)
+  const [reviewRows, setReviewRows] = useState([])
   const [loading, setLoading] = useState(false)
-  const [tab, setTab] = useState('upload')  // upload | review | confirm
+  const [tab, setTab] = useState('upload')
+  const [period, setPeriod] = useState('month')
+  const [masters, setMasters] = useState({ vendors: [], sites: [], orders: [] })
 
-  const loadMonthData = async () => {
+  const locked = ['마감확정', '재마감확정'].includes(closing?.status)
+
+  const loadMonthData = useCallback(async () => {
     setLoading(true)
-    const [{ data: bData }, { data: cData }] = await Promise.all([
+    const [batchResult, closingResult, rowResult] = await Promise.all([
       supabase.from('monthly_import_batches').select('*').eq('base_month', baseMonth).order('uploaded_at', { ascending: false }),
-      supabase.from('monthly_closings').select('*').eq('base_month', baseMonth).single(),
+      supabase.from('monthly_closings').select('*').eq('base_month', baseMonth).maybeSingle(),
+      supabase.from('monthly_import_rows').select('*').eq('base_month', baseMonth).order('source_file').order('source_row').limit(1000),
     ])
-    setBatches(bData || [])
-    setClosing(cData || null)
+    setBatches(batchResult.data || [])
+    setClosing(closingResult.data || null)
+    setReviewRows(rowResult.data || [])
     setLoading(false)
+  }, [baseMonth])
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from('vendors').select('id,vendor_name'),
+      supabase.from('sites').select('id,site_name'),
+      supabase.from('purchase_orders').select('id,po_number'),
+    ]).then(([vendors, sites, orders]) => {
+      setMasters({
+        vendors: vendors.data || [],
+        sites: sites.data || [],
+        orders: orders.data || [],
+      })
+    })
+  }, [])
+
+  useEffect(() => { loadMonthData() }, [loadMonthData])
+
+  const totals = useMemo(() => ({
+    total: batches.reduce((sum, batch) => sum + Number(batch.total_rows || 0), 0),
+    ok: batches.reduce((sum, batch) => sum + Number(batch.ok_rows || 0), 0),
+    error: batches.reduce((sum, batch) => sum + Number(batch.error_rows || 0), 0),
+    unlinked: batches.reduce((sum, batch) => sum + Number(batch.unlinked_rows || 0), 0),
+  }), [batches])
+
+  const confirmClosing = async () => {
+    if (!batches.length) return toast.error('업로드된 파일이 없습니다.')
+    const user = await getCurrentUserLabel()
+    const nextStatus = closing?.status === '수정중' ? '재마감확정' : '마감확정'
+    const nextVersion = closing?.status === '수정중' ? Number(closing.version || 1) : 1
+    const { data, error } = await supabase.from('monthly_closings').upsert({
+      base_month: baseMonth,
+      status: nextStatus,
+      total_rows: totals.total,
+      ok_rows: totals.ok,
+      error_rows: totals.error,
+      unlinked_rows: totals.unlinked,
+      confirmed_at: new Date().toISOString(),
+      confirmed_by: user,
+      version: nextVersion,
+    }, { onConflict: 'base_month' }).select('id').single()
+    if (error) return toast.error(error.message)
+    await Promise.all([
+      supabase.from('monthly_import_batches').update({ status: '마감확정', closing_id: data.id }).eq('base_month', baseMonth),
+      supabase.from('monthly_import_rows').update({ is_confirmed: true, confirmed_at: new Date().toISOString() }).eq('base_month', baseMonth),
+    ])
+    toast.success(`${baseMonth} 마감이 확정되었습니다.`)
+    loadMonthData()
   }
 
-  useEffect(() => { loadMonthData() }, [baseMonth])
+  const startRevision = async () => {
+    const reason = window.prompt('마감 수정사유를 입력해 주세요.')
+    if (!reason?.trim()) return toast.error('마감 수정사유는 필수입니다.')
+    const user = await getCurrentUserLabel()
+    const versionFrom = Number(closing.version || 1)
+    const versionTo = versionFrom + 1
+    const { error } = await supabase.from('monthly_closing_revisions').insert({
+      closing_id: closing.id,
+      base_month: baseMonth,
+      version_from: versionFrom,
+      version_to: versionTo,
+      revision_reason: reason.trim(),
+      target_desc: '월 마감자료 수정',
+      changed_by: user,
+      changes: { status: { before: closing.status, after: '수정중' } },
+    })
+    if (error) return toast.error(error.message)
+    await Promise.all([
+      supabase.from('monthly_closings').update({ status: '수정중', version: versionTo }).eq('id', closing.id),
+      supabase.from('monthly_import_rows').update({ is_confirmed: false, confirmed_at: null }).eq('base_month', baseMonth),
+    ])
+    toast.success('마감 수정상태로 변경했습니다.')
+    loadMonthData()
+  }
 
-  const totalRows  = batches.reduce((s, b) => s + (b.total_rows || 0), 0)
-  const okRows     = batches.reduce((s, b) => s + (b.ok_rows || 0), 0)
-  const errorRows  = batches.reduce((s, b) => s + (b.error_rows || 0), 0)
+  const download = async () => {
+    const months = getPeriodMonths(baseMonth, period)
+    const { data: closings, error: closingError } = await supabase
+      .from('monthly_closings')
+      .select('base_month,status')
+      .in('base_month', months)
+      .in('status', ['마감확정', '재마감확정'])
+    if (closingError) return toast.error(closingError.message)
+    const confirmedMonths = closings?.map(item => item.base_month) || []
+    if (!confirmedMonths.length) return toast.error('선택 기간에 마감확정된 월이 없습니다.')
 
-  const TABS = [
-    { key: 'upload',  label: '① 파일 업로드' },
-    { key: 'review',  label: '② 데이터 검토' },
-    { key: 'confirm', label: '③ 마감 확정' },
+    const { data: rows, error } = await supabase
+      .from('monthly_import_rows')
+      .select('*')
+      .in('base_month', confirmedMonths)
+      .order('base_month')
+      .order('source_file')
+      .order('source_row')
+    if (error) return toast.error(error.message)
+    const labelMap = { month: baseMonth, quarter: `${baseMonth.slice(0, 4)}년_${Math.floor((Number(baseMonth.slice(5)) - 1) / 3) + 1}분기`, half: `${baseMonth.slice(0, 4)}년_${Number(baseMonth.slice(5)) <= 6 ? '상반기' : '하반기'}`, year: `${baseMonth.slice(0, 4)}년_연간` }
+    exportRowsWorkbook(rows || [], labelMap[period])
+    toast.success(`${fmt(rows?.length)}행 ROW DATA를 다운로드했습니다.`)
+  }
+
+  const tabs = [
+    ['upload', '① 파일 업로드'],
+    ['review', '② ROW DATA 검토'],
+    ['confirm', '③ 마감 확정·수정'],
+    ['download', '④ 기간별 다운로드'],
   ]
 
   return (
     <div className="p-6">
-      {/* 헤더 */}
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-xl font-bold text-gray-800">월말반영</h1>
-          <p className="text-sm text-gray-500">월별 실적자료 업로드 및 마감 처리</p>
+          <p className="text-sm text-gray-500">원본 ROW DATA 보존 · 검토 · 마감 · 기간별 다운로드</p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500 font-medium">기준 연월</span>
-          <MonthSelector value={baseMonth} onChange={setBaseMonth} />
+          <span className="text-sm text-gray-500 font-medium">기준연월</span>
+          <input type="month" value={baseMonth} onChange={event => setBaseMonth(event.target.value)} className="input w-40" />
+          <button onClick={loadMonthData} className="btn-secondary"><RefreshCw className="w-4 h-4" /></button>
         </div>
       </div>
 
-      {/* 현황 요약 */}
       <div className="grid grid-cols-4 gap-3 mb-5">
         {[
-          { label: '업로드 파일', value: batches.length + '건', color: 'bg-blue-50 text-blue-700' },
-          { label: '전체 행수',   value: totalRows.toLocaleString() + '행', color: 'bg-gray-50 text-gray-700' },
-          { label: '정상 처리',   value: okRows.toLocaleString() + '행',    color: 'bg-green-50 text-green-700' },
-          { label: '오류/미연결', value: errorRows.toLocaleString() + '행', color: 'bg-red-50 text-red-700' },
-        ].map(({ label, value, color }) => (
+          ['업로드 파일', `${batches.length}건`, 'bg-blue-50 text-blue-700'],
+          ['전체 ROW DATA', `${fmt(totals.total)}행`, 'bg-gray-50 text-gray-700'],
+          ['정상 연결', `${fmt(totals.ok)}행`, 'bg-green-50 text-green-700'],
+          ['확인필요·오류', `${fmt(totals.unlinked + totals.error)}행`, 'bg-red-50 text-red-700'],
+        ].map(([label, value, color]) => (
           <div key={label} className={`rounded-xl border p-3 ${color}`}>
-            <p className="text-xs opacity-70 mb-0.5">{label}</p>
+            <p className="text-xs opacity-70">{label}</p>
             <p className="text-lg font-bold">{value}</p>
           </div>
         ))}
       </div>
 
-      {/* 마감 상태 표시 */}
       {closing && (
-        <div className={`mb-4 px-4 py-2.5 rounded-lg border flex items-center gap-2 text-sm ${
-          closing.status === '마감확정' ? 'bg-green-50 border-green-300 text-green-700' :
-          'bg-yellow-50 border-yellow-300 text-yellow-700'
-        }`}>
-          <CheckCircle className="w-4 h-4 shrink-0" />
-          <span>{baseMonth} 마감 상태: <b>{closing.status}</b> (v{closing.version})</span>
-          {closing.confirmed_at && (
-            <span className="ml-2 text-xs opacity-70">확정: {new Date(closing.confirmed_at).toLocaleString('ko-KR')}</span>
-          )}
+        <div className={`mb-4 px-4 py-3 rounded-lg border flex items-center gap-2 text-sm ${locked ? 'bg-green-50 border-green-300 text-green-700' : 'bg-yellow-50 border-yellow-300 text-yellow-700'}`}>
+          <CheckCircle className="w-4 h-4" />
+          <span>{baseMonth} · <b>{closing.status}</b> · 버전 {closing.version}</span>
+          {closing.confirmed_at && <span className="text-xs opacity-70">{new Date(closing.confirmed_at).toLocaleString('ko-KR')}</span>}
         </div>
       )}
 
-      {/* 탭 */}
       <div className="flex border-b mb-4">
-        {TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}>
+        {tabs.map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} className={`px-5 py-2.5 text-sm font-medium border-b-2 ${tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}>
             {label}
           </button>
         ))}
       </div>
 
-      {/* 탭 내용 */}
       {tab === 'upload' && (
         <div>
-          <p className="text-sm text-gray-500 mb-4">
-            아래 6가지 파일을 엑셀(.xlsx/.xls)로 업로드하세요. 원본 데이터는 ROW DATA로 100% 보존됩니다.
-          </p>
+          <p className="text-sm text-gray-500 mb-4">파일의 모든 시트를 읽고 원본파일·시트·행번호와 함께 저장합니다.</p>
           <div className="grid grid-cols-3 gap-3">
-            {FILE_TYPES.map(type => (
-              <FileUploadCard key={type.key} type={type} baseMonth={baseMonth} onUploaded={loadMonthData} />
-            ))}
+            {FILE_TYPES.map(type => <FileUploadCard key={type.key} type={type} baseMonth={baseMonth} locked={locked} masters={masters} onUploaded={loadMonthData} />)}
           </div>
-
-          {/* 업로드 이력 */}
           {batches.length > 0 && (
-            <div className="mt-6">
-              <h3 className="text-sm font-bold text-gray-700 mb-2">{baseMonth} 업로드 이력</h3>
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>구분</th><th>파일명</th><th>시트</th><th>전체</th><th>정상</th><th>오류</th><th>상태</th><th>업로드시각</th>
+            <div className="mt-6 bg-white rounded-xl border overflow-hidden">
+              <table className="tbl">
+                <thead><tr><th>구분</th><th>파일명</th><th>시트</th><th>전체</th><th>정상</th><th>확인필요</th><th>오류</th><th>상태</th></tr></thead>
+                <tbody>
+                  {batches.map(batch => (
+                    <tr key={batch.id}>
+                      <td>{FILE_TYPES.find(type => type.key === batch.file_type)?.label}</td>
+                      <td>{batch.file_name}</td><td>{batch.sheet_name}</td>
+                      <td className="text-right">{fmt(batch.total_rows)}</td>
+                      <td className="text-right text-green-600">{fmt(batch.ok_rows)}</td>
+                      <td className="text-right text-yellow-600">{fmt(batch.unlinked_rows)}</td>
+                      <td className="text-right text-red-600">{fmt(batch.error_rows)}</td>
+                      <td><span className={batch.status === '마감확정' ? 'badge-green' : 'badge-yellow'}>{batch.status}</span></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {batches.map(b => (
-                      <tr key={b.id}>
-                        <td className="text-xs font-medium">{FILE_TYPES.find(t => t.key === b.file_type)?.label || b.file_type}</td>
-                        <td className="text-xs max-w-[160px] truncate" title={b.file_name}>{b.file_name}</td>
-                        <td className="text-xs">{b.sheet_name || '-'}</td>
-                        <td className="text-right text-xs">{(b.total_rows || 0).toLocaleString()}</td>
-                        <td className="text-right text-xs text-green-600">{(b.ok_rows || 0).toLocaleString()}</td>
-                        <td className="text-right text-xs text-red-500">{(b.error_rows || 0).toLocaleString()}</td>
-                        <td className="text-center">
-                          <span className={b.status === '마감확정' ? 'badge-green' : b.status === '검토중' ? 'badge-yellow' : 'badge-blue'}>
-                            {b.status}
-                          </span>
-                        </td>
-                        <td className="text-xs text-gray-400">
-                          {b.uploaded_at ? new Date(b.uploaded_at).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '-'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
       )}
 
       {tab === 'review' && (
-        <div className="text-center py-16 text-gray-400">
-          <AlertCircle className="w-10 h-10 mx-auto mb-3 text-gray-200" />
-          <p className="text-sm">데이터 검토 기능은 다음 단계에서 구현됩니다.</p>
-          <p className="text-xs mt-1 text-gray-300">업로드된 ROW DATA의 거래처·현장·발주 연결 상태를 검토합니다.</p>
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-gray-500">최대 1,000행을 화면에서 검토하며 다운로드에는 전체 행이 포함됩니다.</p>
+            <span className="text-xs text-gray-400">표시 {fmt(reviewRows.length)}행</span>
+          </div>
+          <ReviewTable rows={reviewRows} loading={loading} />
         </div>
       )}
 
       {tab === 'confirm' && (
-        <div className="max-w-md">
-          <div className="card">
-            <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
-              <CalendarCheck className="w-5 h-5 text-blue-500" />
-              {baseMonth} 마감 확정
-            </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              업로드된 자료를 최종 확정합니다. 확정 후에는 수정 사유를 입력해야 재마감이 가능합니다.
-            </p>
-            <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
-              <div className="flex justify-between">
-                <span className="text-gray-500">업로드 파일</span>
-                <span className="font-medium">{batches.length}건</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">전체 행수</span>
-                <span className="font-medium">{totalRows.toLocaleString()}행</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">오류 행수</span>
-                <span className={`font-medium ${errorRows > 0 ? 'text-red-500' : 'text-green-600'}`}>
-                  {errorRows.toLocaleString()}행
-                </span>
-              </div>
-            </div>
-            {closing?.status === '마감확정' ? (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">
-                ✓ 이미 마감 확정되었습니다 (v{closing.version})
-              </div>
-            ) : (
-              <button
-                disabled={batches.length === 0}
-                onClick={async () => {
-                  if (batches.length === 0) return toast.error('업로드된 파일이 없습니다.')
-                  const { error } = await supabase.from('monthly_closings').upsert({
-                    base_month:   baseMonth,
-                    status:       '마감확정',
-                    total_rows:   totalRows,
-                    ok_rows:      okRows,
-                    error_rows:   errorRows,
-                    confirmed_at: new Date().toISOString(),
-                    confirmed_by: 'user',
-                    version:      (closing?.version || 0) + 1,
-                  }, { onConflict: 'base_month' })
-                  if (error) return toast.error(error.message)
-                  toast.success(`${baseMonth} 마감이 확정되었습니다.`)
-                  loadMonthData()
-                }}
-                className="btn-primary w-full">
-                마감 확정
-              </button>
-            )}
+        <div className="max-w-xl card">
+          <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2"><CalendarCheck className="w-5 h-5 text-blue-500" />{baseMonth} 마감관리</h3>
+          <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1 mb-4">
+            <div className="flex justify-between"><span>전체 ROW DATA</span><b>{fmt(totals.total)}행</b></div>
+            <div className="flex justify-between"><span>확인필요·오류</span><b className={totals.unlinked + totals.error ? 'text-red-600' : 'text-green-600'}>{fmt(totals.unlinked + totals.error)}행</b></div>
+            <div className="flex justify-between"><span>현재 상태</span><b>{closing?.status || '미마감'}</b></div>
           </div>
+          {locked ? (
+            <button onClick={startRevision} className="btn-secondary w-full flex justify-center items-center gap-2"><Pencil className="w-4 h-4" />마감 수정 시작</button>
+          ) : (
+            <button disabled={!batches.length} onClick={confirmClosing} className="btn-primary w-full">{closing?.status === '수정중' ? '재마감 확정' : '마감 확정'}</button>
+          )}
+          <p className="text-xs text-gray-400 mt-3">마감 수정 시 사유와 버전이 기록되며 기존 이력은 삭제되지 않습니다.</p>
+        </div>
+      )}
+
+      {tab === 'download' && (
+        <div className="max-w-2xl card">
+          <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2"><Download className="w-5 h-5 text-blue-500" />통합 ROW DATA 다운로드</h3>
+          <p className="text-sm text-gray-500 mb-4">마감확정된 월의 원본행·표준화원장·오류·현장별원가·업체별매입지급을 한 파일로 정리합니다.</p>
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {[['month', '월간'], ['quarter', '분기'], ['half', '반기'], ['year', '연간']].map(([key, label]) => (
+              <button key={key} onClick={() => setPeriod(key)} className={period === key ? 'btn-primary' : 'btn-secondary'}>{label}</button>
+            ))}
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 mb-4">
+            포함 시트: 통합ROW_DATA, 작업·출고·매입·지급·재고·매출 원본, 현장별원가, 업체별매입지급, 검증오류, 요약분석
+          </div>
+          <button onClick={download} className="btn-primary w-full flex items-center justify-center gap-2"><FileSpreadsheet className="w-4 h-4" />엑셀 다운로드</button>
         </div>
       )}
     </div>
