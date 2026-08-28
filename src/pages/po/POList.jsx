@@ -423,8 +423,17 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
 // ──────────────────────────────────────────────────────────
 // DetailPanel — 우측 상세패널 (3탭)
 // ──────────────────────────────────────────────────────────
-function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
+function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChange }) {
   const [tab, setTab] = useState('items')
+  const [changingStatus, setChangingStatus] = useState(false)
+
+  const changeStatus = async (newStatus) => {
+    const { error } = await supabase.from('purchase_orders').update({ status: newStatus }).eq('id', po.id)
+    if (error) return toast.error(error.message)
+    toast.success(`상태 → ${newStatus}`)
+    setChangingStatus(false)
+    onStatusChange && onStatusChange(newStatus)
+  }
   const [items, setItems] = useState([])
   const [plans, setPlans] = useState([])
   const [loading, setLoading] = useState(true)
@@ -506,7 +515,24 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy }) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <span className="font-mono text-sm font-bold text-gray-800 truncate">{po.po_number}</span>
-              <span className={`${STATUS_BADGE[po.status]} shrink-0`}>{po.status}</span>
+              <div className="relative shrink-0">
+                  <button
+                    onClick={() => setChangingStatus(v => !v)}
+                    className={`${STATUS_BADGE[po.status]} cursor-pointer hover:opacity-80 transition-opacity`}
+                    title="클릭하여 상태 변경"
+                  >{po.status} ▾</button>
+                  {changingStatus && (
+                    <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[110px]">
+                      {STATUS_LIST.map(s => (
+                        <button key={s} onClick={() => changeStatus(s)}
+                          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-blue-50 font-medium
+                            ${s === po.status ? 'text-blue-600 bg-blue-50' : 'text-gray-700'}`}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
             </div>
             <p className="text-xs text-gray-500 truncate">{vendor?.vendor_name} · {site?.site_name || '현장미지정'}</p>
             <p className="text-xs text-[#334155]">발주 {po.po_date} · 상차예정 {po.expected_delivery_date || '-'}</p>
@@ -898,6 +924,10 @@ export default function POList() {
               onClose={() => setSelected(null)}
               onEdit={() => openModal(selected, false)}
               onCopy={() => openModal(selected, true)}
+              onStatusChange={(newStatus) => {
+                setSelected(prev => prev ? { ...prev, status: newStatus } : prev)
+                load()
+              }}
             />
           </div>
         )}
