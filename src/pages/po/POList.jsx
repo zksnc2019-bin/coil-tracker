@@ -10,14 +10,14 @@ import {
 // ──────────────────────────────────────────────────────────
 // 상수
 // ──────────────────────────────────────────────────────────
-const STATUS_LIST = ['임시저장','발주완료','입고예정','일부입고','입고완료','납기지연','취소']
+const STATUS_LIST = ['임시저장','발주완료','출고예정','일부출고','출고완료','납기지연','취소']
 
 const STATUS_BADGE = {
   '임시저장': 'badge-gray',
   '발주완료': 'badge-blue',
-  '입고예정': 'badge-blue',
-  '일부입고': 'badge-yellow',
-  '입고완료': 'badge-green',
+  '출고예정': 'badge-blue',
+  '일부출고': 'badge-yellow',
+  '출고완료': 'badge-green',
   '납기지연': 'badge-red',
   '취소':    'badge-gray',
 }
@@ -25,9 +25,9 @@ const STATUS_BADGE = {
 const STATUS_BORDER = {
   '임시저장': 'border-l-gray-300',
   '발주완료': 'border-l-blue-400',
-  '입고예정': 'border-l-blue-500',
-  '일부입고': 'border-l-yellow-400',
-  '입고완료': 'border-l-green-500',
+  '출고예정': 'border-l-blue-500',
+  '일부출고': 'border-l-yellow-400',
+  '출고완료': 'border-l-green-500',
   '납기지연': 'border-l-red-500',
   '취소':    'border-l-gray-300',
 }
@@ -472,7 +472,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
 
   const savePlan = async () => {
     if (!planForm.planned_date || !planForm.expected_month || !planForm.plan_weight) {
-      return toast.error('입고예정일, 예상 매입월, 예정중량은 필수입니다.')
+      return toast.error('출고예정일, 예상 매입월, 예정중량은 필수입니다.')
     }
     setSavingPlan(true)
     const weight = parseFloat(planForm.plan_weight) || 0
@@ -487,12 +487,12 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
       plan_weight: weight,
       unit_price_est: price || null,
       est_amount: price ? weight * price : null,
-      status: '입고예정',
+      status: '출고예정',
       memo: planForm.memo || null,
     })
     setSavingPlan(false)
     if (error) return toast.error(error.message)
-    toast.success('분할입고 계획을 등록했습니다.')
+    toast.success('분할출고 계획을 등록했습니다.')
     setPlanForm({
       po_item_id: '', planned_date: '', expected_month: '',
       plan_qty: '', plan_weight: '', unit_price_est: '', memo: '',
@@ -503,7 +503,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
 
   const TABS = [
     { key: 'items',    label: '발주품목',    icon: Package,  badge: items.length },
-    { key: 'receipts', label: '입고매입연결', icon: Truck,    badge: plans.length },
+    { key: 'receipts', label: '출고매입연결', icon: Truck,    badge: plans.length },
     { key: 'history',  label: '변경이력',    icon: History,  badge: 0 },
   ]
 
@@ -626,7 +626,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
             <button onClick={() => setShowPlanForm(value => !value)}
               className="btn-secondary w-full mb-3 flex items-center justify-center gap-1.5 text-xs">
               <Plus className="w-3.5 h-3.5" />
-              {showPlanForm ? '분할입고 입력 닫기' : '분할입고 계획 추가'}
+              {showPlanForm ? '분할출고 입력 닫기' : '분할출고 계획 추가'}
             </button>
 
             {showPlanForm && (
@@ -646,7 +646,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className={LBL}>입고예정일 *</label>
+                    <label className={LBL}>출고예정일 *</label>
                     <input type="date" value={planForm.planned_date}
                       onChange={e => setPlanForm(form => ({
                         ...form,
@@ -689,9 +689,9 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
                 )}
                 <input value={planForm.memo}
                   onChange={e => setPlanForm(form => ({ ...form, memo: e.target.value }))}
-                  className="input text-xs" placeholder="분할입고 메모" />
+                  className="input text-xs" placeholder="분할출고 메모" />
                 <button onClick={savePlan} disabled={savingPlan} className="btn-primary w-full text-xs">
-                  {savingPlan ? '저장중...' : '입고계획 저장'}
+                  {savingPlan ? '저장중...' : '출고계획 저장'}
                 </button>
               </div>
             )}
@@ -699,8 +699,8 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
             {plans.length === 0 ? (
               <div className="text-center py-10">
                 <Truck className="w-8 h-8 text-gray-200 mx-auto mb-2" />
-                <p className="text-gray-400 text-sm">등록된 입고 계획이 없습니다.</p>
-                <p className="text-xs text-gray-300 mt-1">분할입고 계획을 등록해 주세요.</p>
+                <p className="text-gray-400 text-sm">등록된 출고 계획이 없습니다.</p>
+                <p className="text-xs text-gray-300 mt-1">분할출고 계획을 등록해 주세요.</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -709,7 +709,7 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-bold text-gray-500">입고 {p.plan_seq}차</span>
                       <span className={
-                        p.status === '입고완료' ? 'badge-green' :
+                        p.status === '출고완료' ? 'badge-green' :
                         p.status === '취소' ? 'badge-gray' : 'badge-blue'
                       }>{p.status}</span>
                     </div>
