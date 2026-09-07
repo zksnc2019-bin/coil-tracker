@@ -185,9 +185,10 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
       manager_name: '',
       manager_phone: '',
       payment_terms: '익월말',
+      sale_unit_price: '',
       memo: '',
     }
-    if (po) { Object.assign(base, po); base.site_id = po.site_id ?? ''; base.vendor_id = po.vendor_id ?? '' }
+    if (po) { Object.assign(base, po); base.site_id = po.site_id ?? ''; base.vendor_id = po.vendor_id ?? ''; base.sale_unit_price = po.sale_unit_price ?? '' }
     if (copyMode) {
       delete base.id
       delete base.po_number
@@ -247,6 +248,7 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
       manager_name: form.manager_name || null,
       manager_phone: form.manager_phone || null,
       payment_terms: form.payment_terms || '익월말',
+      sale_unit_price: form.sale_unit_price !== '' ? parseFloat(form.sale_unit_price) : null,
       memo: form.memo || null,
       status,
     }
@@ -346,6 +348,24 @@ function POModal({ po, copyMode, vendors, sites, onClose, onSaved }) {
                 {['현금', '익월말', '60일', '90일', '어음'].map(v => <option key={v}>{v}</option>)}
               </select>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={LBL}>판매단가(원/kg)</label>
+              <input type="number" value={form.sale_unit_price} onChange={e => setF('sale_unit_price', e.target.value)}
+                className="input" step="1" min="0" placeholder="현장 청구단가" />
+            </div>
+            {form.sale_unit_price && totalWeight > 0 && (
+              <div className="flex items-end">
+                <div className="bg-green-50 rounded-lg px-3 py-2 text-xs text-green-700 w-full">
+                  <span>판매금액: <b>{Math.round(parseFloat(form.sale_unit_price) * totalWeight).toLocaleString()} 원</b></span>
+                  {totalAmount > 0 && (
+                    <span className="ml-3">마진: <b>{Math.round(parseFloat(form.sale_unit_price) * totalWeight - totalAmount).toLocaleString()} 원</b></span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -602,14 +622,43 @@ function DetailPanel({ po, vendors, sites, onClose, onEdit, onCopy, onStatusChan
                     )}
                   </div>
                 ))}
-                {(totalWt > 0 || totalAmt > 0) && (
-                  <div className="bg-gray-100 rounded-lg px-3 py-2 flex justify-between text-sm">
-                    <span className="text-gray-600">합계</span>
-                    <span className="font-bold text-gray-800">
-                      {fmt(totalWt, 1)} kg · {Math.round(totalAmt).toLocaleString()} 원
-                    </span>
-                  </div>
-                )}
+                {(totalWt > 0 || totalAmt > 0) && (() => {
+                  const saleAmt = po.sale_unit_price != null ? po.sale_unit_price * totalWt : null
+                  const margin  = saleAmt != null ? saleAmt - totalAmt : null
+                  return (
+                    <div className="space-y-1.5">
+                      <div className="bg-gray-100 rounded-lg px-3 py-2 flex justify-between text-sm">
+                        <span className="text-gray-600">매입합계</span>
+                        <span className="font-bold text-gray-800">
+                          {fmt(totalWt, 1)} kg · {Math.round(totalAmt).toLocaleString()} 원
+                        </span>
+                      </div>
+                      {po.sale_unit_price != null ? (
+                        <div className="bg-green-50 rounded-lg px-3 py-2 text-xs">
+                          <div className="flex justify-between mb-1">
+                            <span className="text-green-700">판매단가</span>
+                            <span className="font-bold text-green-700">{fmt(po.sale_unit_price)} 원/kg</span>
+                          </div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-green-700">판매금액</span>
+                            <span className="font-bold text-green-700">{Math.round(saleAmt).toLocaleString()} 원</span>
+                          </div>
+                          <div className={`flex justify-between pt-1 border-t border-green-100`}>
+                            <span className={margin >= 0 ? 'text-emerald-700' : 'text-red-600'}>마진</span>
+                            <span className={`font-bold ${margin >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                              {Math.round(margin).toLocaleString()} 원
+                              {totalAmt > 0 && ` (${((margin / (saleAmt || 1)) * 100).toFixed(1)}%)`}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-400 text-center">
+                          판매단가 미입력 — 수정에서 입력하세요
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
               </>
             )}
           </div>
